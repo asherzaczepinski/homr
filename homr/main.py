@@ -41,6 +41,7 @@ from homr.staff_position_save_load import load_staff_positions, save_staff_posit
 from homr.title_detection import detect_title, download_ocr_weights
 from homr.transformer.configs import Config, default_config
 from homr.type_definitions import NDArray
+from homr.visualization_output import VisualizationOutput
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -137,9 +138,11 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
     )
 
     eprint("Creating bounds for clefs_keys")
+    # Lower min_size to capture key signature sharps/flats (smaller than clefs)
     clefs_keys = create_rotated_bounding_boxes(
-        predictions.clefs_keys, min_size=(20, 40), max_size=(1000, 1000)
+        predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000)
     )
+
     eprint("Creating bounds for stems_rest")
     stems_rest = create_rotated_bounding_boxes(predictions.stems_rest)
     eprint("Creating bounds for bar_lines")
@@ -166,6 +169,10 @@ def process_image(
     xml_generator_args: XmlGeneratorArguments,
 ) -> None:
     eprint("Processing " + image_path)
+
+    # Create visualization output manager (always enabled)
+    viz_output = VisualizationOutput(image_path)
+
     xml_file = replace_extension(image_path, ".musicxml")
     debug_cleanup: Debug | None = None
     try:
@@ -181,7 +188,7 @@ def process_image(
             )
             title = ""
         else:
-            multi_staffs, image, debug, title_future = detect_staffs_in_image(image_path, config)
+            multi_staffs, image, debug, title_future = detect_staffs_in_image(image_path, config, viz_output)
         debug_cleanup = debug
 
         transformer_config = Config()
@@ -200,7 +207,16 @@ def process_image(
 
         eprint("Writing XML", result_staffs)
         xml = generate_xml(xml_generator_args, result_staffs, title)
-        xml.write(xml_file)
+
+        # Save XML to output folder
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.musicxml', delete=False) as tmp:
+            xml.write(tmp.name)
+            with open(tmp.name, 'r') as f:
+                xml_string = f.read()
+        import os as os_temp
+        os_temp.remove(tmp.name)
+        xml_file = viz_output.save_musicxml(xml_string)
 
         eprint("Finished parsing " + str(len(result_staffs)) + " staves")
         teaser_file = replace_extension(image_path, "_teaser.png")
@@ -210,7 +226,7 @@ def process_image(
         debug.write_teaser(teaser_file, multi_staffs)
         debug.clean_debug_files_from_previous_runs()
 
-        eprint("Result was written to", xml_file)
+        eprint(viz_output.get_summary())
     except:
         if os.path.exists(xml_file):
             os.remove(xml_file)
@@ -221,12 +237,21 @@ def process_image(
 
 
 def detect_staffs_in_image(
-    image_path: str, config: ProcessingConfig
+    image_path: str, config: ProcessingConfig, viz_output: VisualizationOutput | None = None
 ) -> tuple[list[MultiStaff], NDArray, Debug, Future[str]]:
     predictions, debug = load_and_preprocess_predictions(
         image_path, config.enable_debug, config.enable_cache, config.use_gpu_inference
     )
+
+    # Set original image for visualization output
+    if viz_output is not None:
+        viz_output.set_original_image(predictions.original)
+
     symbols = predict_symbols(debug, predictions)
+
+    # Save symbols detection visualization
+    if viz_output is not None:
+        viz_output.save_symbols_detection(symbols.clefs_keys)
 
     symbols.staff_fragments = break_wide_fragments(symbols.staff_fragments)
     debug.write_bounding_boxes("staff_fragments", symbols.staff_fragments)
@@ -237,6 +262,10 @@ def detect_staffs_in_image(
     eprint("Found " + str(len(noteheads_with_stems)) + " noteheads")
     if len(noteheads_with_stems) == 0:
         raise Exception("No noteheads found")
+
+    # Save notes detection visualization
+    if viz_output is not None:
+        viz_output.save_notes_detection(noteheads_with_stems)
 
     average_note_head_height = float(
         np.median([notehead.notehead.size[1] for notehead in noteheads_with_stems])
@@ -255,6 +284,10 @@ def detect_staffs_in_image(
     debug.write_bounding_boxes_alternating_colors("bar_lines", bar_line_boxes)
     eprint("Found " + str(len(bar_line_boxes)) + " bar lines")
 
+    # Save measures (bar lines) detection visualization
+    if viz_output is not None:
+        viz_output.save_measures_detection(bar_line_boxes)
+
     debug.write_bounding_boxes(
         "anchor_input", symbols.staff_fragments + bar_line_boxes + symbols.clefs_keys
     )
@@ -265,6 +298,10 @@ def detect_staffs_in_image(
         raise Exception("No staffs found")
     title_future = detect_title(debug, staffs[0])
     debug.write_bounding_boxes_alternating_colors("staffs", staffs)
+
+    # Save staff detection visualization
+    if viz_output is not None:
+        viz_output.save_staff_detection(staffs)
 
     brace_dot_img = prepare_brace_dot_image(predictions.symbols, predictions.staff)
     debug.write_threshold_image("brace_dot", brace_dot_img)

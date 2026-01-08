@@ -312,6 +312,8 @@ def detect_staffs_in_image(
         viz_output.save_staff_detection(staffs)
         # Save note positions grid visualization
         viz_output.save_note_positions_grid(staffs)
+        # Save note splitting analysis (shows which line each note in a chord belongs to)
+        viz_output.save_note_splitting_analysis(staffs, noteheads_with_stems)
 
     brace_dot_img = prepare_brace_dot_image(predictions.symbols, predictions.staff)
     debug.write_threshold_image("brace_dot", brace_dot_img)

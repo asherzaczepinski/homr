@@ -139,8 +139,9 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
 
     eprint("Creating bounds for clefs_keys")
     # Lower min_size to capture key signature sharps/flats (smaller than clefs)
+    # skip_merging=True to show individual sharps/flats separately
     clefs_keys = create_rotated_bounding_boxes(
-        predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000)
+        predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000), skip_merging=True
     )
 
     eprint("Creating bounds for stems_rest")
@@ -191,34 +192,41 @@ def process_image(
             multi_staffs, image, debug, title_future = detect_staffs_in_image(image_path, config, viz_output)
         debug_cleanup = debug
 
-        transformer_config = Config()
-        transformer_config.use_gpu_inference = config.use_gpu_inference
+        # DETECTION ONLY MODE: Skip all parsing and XML generation
+        # All visualizations have already been saved by detect_staffs_in_image
+        eprint("Detection complete! Skipping parsing and XML generation.")
+        eprint(viz_output.get_summary())
+        return
 
-        result_staffs = parse_staffs(
-            debug,
-            multi_staffs,
-            image,
-            selected_staff=config.selected_staff,
-            config=transformer_config,
-        )
-
-        title = title_future.result(60)
-        eprint("Found title:", title)
-
-        eprint("Writing XML", result_staffs)
-        xml = generate_xml(xml_generator_args, result_staffs, title)
-
-        # Save XML to output folder
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.musicxml', delete=False) as tmp:
-            xml.write(tmp.name)
-            with open(tmp.name, 'r') as f:
-                xml_string = f.read()
-        import os as os_temp
-        os_temp.remove(tmp.name)
-        xml_file = viz_output.save_musicxml(xml_string)
-
-        eprint("Finished parsing " + str(len(result_staffs)) + " staves")
+        # The code below is now skipped (parsing and XML generation)
+        # transformer_config = Config()
+        # transformer_config.use_gpu_inference = config.use_gpu_inference
+        #
+        # result_staffs = parse_staffs(
+        #     debug,
+        #     multi_staffs,
+        #     image,
+        #     selected_staff=config.selected_staff,
+        #     config=transformer_config,
+        # )
+        #
+        # title = title_future.result(60)
+        # eprint("Found title:", title)
+        #
+        # eprint("Writing XML", result_staffs)
+        # xml = generate_xml(xml_generator_args, result_staffs, title)
+        #
+        # # Save XML to output folder
+        # import tempfile
+        # with tempfile.NamedTemporaryFile(mode='w', suffix='.musicxml', delete=False) as tmp:
+        #     xml.write(tmp.name)
+        #     with open(tmp.name, 'r') as f:
+        #         xml_string = f.read()
+        # import os as os_temp
+        # os_temp.remove(tmp.name)
+        # xml_file = viz_output.save_musicxml(xml_string)
+        #
+        # eprint("Finished parsing " + str(len(result_staffs)) + " staves")
         teaser_file = replace_extension(image_path, "_teaser.png")
         if config.write_staff_positions:
             staff_position_files = replace_extension(image_path, ".txt")

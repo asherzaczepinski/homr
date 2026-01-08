@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from homr.bounding_boxes import DebugDrawable
 from homr.type_definitions import NDArray
@@ -426,6 +427,127 @@ class VisualizationOutput:
         output_path = os.path.join(self.output_dir, f"{self.base_name}_note_splitting.png")
         cv2.imwrite(output_path, img)
         print(f"✓ Saved note splitting analysis: {output_path}")
+
+    def save_everything(self, staffs, noteheads_with_stems):
+        """Show all notes with yellow markers: individual notes assigned to closest line, grouped notes split."""
+        img = self.original_image.copy()
+        if img is None:
+            print(f"✗ Could not load image for everything visualization")
+            return
+
+        # Draw red lines for note positions
+        line_color = (0, 0, 255)  # Red in BGR
+        line_thickness = 1
+        img_width = img.shape[1]
+
+        all_staff_lines = []
+        all_half_lines = []
+
+        for staff in staffs:
+            # Get the 5 actual staff line Y positions (average across the staff width)
+            staff_line_positions = []
+            for line_idx in range(5):
+                y_values = [grid_point.y[line_idx] for grid_point in staff.grid]
+                avg_y = sum(y_values) / len(y_values)
+                staff_line_positions.append(avg_y)
+
+            all_staff_lines.append(staff_line_positions)
+
+            # Draw lines on staff lines
+            for staff_line_y in staff_line_positions:
+                y = int(staff_line_y)
+                if 0 <= y < img.shape[0]:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                all_half_lines.append(staff_line_y)
+
+            # Draw lines between staff lines (spaces)
+            for i in range(4):
+                mid_y = (staff_line_positions[i] + staff_line_positions[i + 1]) / 2
+                y = int(mid_y)
+                if 0 <= y < img.shape[0]:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                all_half_lines.append(mid_y)
+
+        # Handle gaps between staffs
+        for i in range(len(all_staff_lines) - 1):
+            bottom_of_current = all_staff_lines[i][-1]
+            top_of_next = all_staff_lines[i + 1][0]
+            gap = top_of_next - bottom_of_current
+
+            if gap > 5:
+                mid_y = (bottom_of_current + top_of_next) / 2
+                y = int(mid_y)
+                if 0 <= y < img.shape[0]:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                all_half_lines.append(mid_y)
+
+        all_half_lines = sorted(all_half_lines)
+
+        # Group nearby noteheads (same logic as note_splitting_analysis)
+        marker_color = (0, 255, 255)  # Yellow in BGR
+        marker_radius = 3
+
+        noteheads = [n.notehead for n in noteheads_with_stems]
+        grouped = []
+        used = set()
+
+        for i, note in enumerate(noteheads):
+            if i in used:
+                continue
+            group = [note]
+            used.add(i)
+
+            for j, other in enumerate(noteheads):
+                if j in used:
+                    continue
+                if abs(note.center[0] - other.center[0]) < 20:
+                    group.append(other)
+                    used.add(j)
+
+            grouped.append(group)
+
+        # Process each group
+        for group in grouped:
+            if len(group) == 1:
+                # Individual note - assign to closest half-line
+                note = group[0]
+                center_y = note.center[1]
+
+                # Find closest half-line
+                closest_line = min(all_half_lines, key=lambda y: abs(y - center_y))
+                center_x = int(note.center[0])
+                y_pos = int(closest_line)
+
+                cv2.circle(img, (center_x, y_pos), marker_radius, marker_color, -1)
+            else:
+                # Grouped notes (chord) - use splitting logic
+                top_y = min(n.top_left[1] for n in group)
+                bottom_y = max(n.bottom_right[1] for n in group)
+                center_x = int(np.mean([n.center[0] for n in group]))
+
+                # Find lines in range
+                lines_in_range = [y for y in all_half_lines if top_y <= y <= bottom_y]
+
+                if len(lines_in_range) > 1:
+                    avg_spacing = (lines_in_range[-1] - lines_in_range[0]) / (len(lines_in_range) - 1)
+                else:
+                    avg_spacing = 16
+
+                height_px = bottom_y - top_y
+                note_height = 2 * avg_spacing  # A note = 2 half-lines
+                num_notes = max(1, round(height_px / note_height))
+
+                # Place yellow markers
+                for i in range(num_notes):
+                    if num_notes == 1:
+                        y_pos = int((top_y + bottom_y) / 2)
+                    else:
+                        y_pos = int(top_y + (i + 0.5) * height_px / num_notes)
+                    cv2.circle(img, (center_x, y_pos), marker_radius, marker_color, -1)
+
+        output_path = os.path.join(self.output_dir, f"{self.base_name}_everything.png")
+        cv2.imwrite(output_path, img)
+        print(f"✓ Saved everything visualization: {output_path}")
 
     def get_summary(self) -> str:
         """Get a summary of the output directory."""

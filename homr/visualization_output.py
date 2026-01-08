@@ -104,9 +104,8 @@ class VisualizationOutput:
 
         img = self.original_image.copy()
         for note in noteheads_with_stems:
+            # Only draw noteheads, not stems
             note.notehead.draw_onto_image(img, self.colors["notes"])
-            if note.stem is not None:
-                note.stem.draw_onto_image(img, self.colors["notes"])
 
         output_path = os.path.join(self.output_dir, f"{self.base_name}_notes.png")
         cv2.imwrite(output_path, img)
@@ -173,6 +172,107 @@ class VisualizationOutput:
             f.write(xml_content)
         print(f"✓ Saved MusicXML: {output_path}")
         return output_path
+
+    def save_note_positions_grid(self, staffs: list) -> None:
+        """
+        Save visualization showing all possible note positions on staffs.
+        Draws red lines at every line and space position where notes could be.
+
+        Args:
+            staffs: List of detected Staff objects with grid information
+        """
+        if self.original_image is None:
+            return
+
+        img = self.original_image.copy()
+
+        # Color for the position lines (red)
+        line_color = (0, 0, 255)  # Red in BGR
+        line_thickness = 1
+
+        # Get full image width
+        img_width = img.shape[1]
+
+        # Keep track of all line Y positions drawn to avoid duplicates
+        drawn_lines = set()
+
+        for staff_idx, staff in enumerate(staffs):
+            # Get average unit size (distance between staff lines) for THIS staff
+            unit_size = staff.average_unit_size
+
+            # Get the 5 actual staff line Y positions (average across the staff width)
+            # Calculate average Y for each of the 5 lines
+            staff_line_positions = []
+            for line_idx in range(5):
+                y_values = [grid_point.y[line_idx] for grid_point in staff.grid]
+                avg_y = sum(y_values) / len(y_values)
+                staff_line_positions.append(avg_y)
+
+            # DRAW THE 5 ACTUAL STAFF LINES at their exact positions
+            # ALWAYS draw these no matter what (no duplicate check)
+            for staff_line_y in staff_line_positions:
+                y = int(staff_line_y)
+                if 0 <= y < img.shape[0]:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                    drawn_lines.add(y)  # Track for other calculated lines
+
+            # DRAW THE 4 SPACES BETWEEN STAFF LINES
+            for i in range(4):  # 4 spaces between 5 lines
+                # Space is halfway between line i and line i+1
+                space_y = (staff_line_positions[i] + staff_line_positions[i + 1]) / 2
+                y = int(space_y)
+                if 0 <= y < img.shape[0] and y not in drawn_lines:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                    drawn_lines.add(y)
+
+            # DRAW LINES ABOVE THE STAFF
+            top_line = staff_line_positions[0]
+
+            # Check if there's a staff above this one
+            if staff_idx > 0:
+                prev_staff = staffs[staff_idx - 1]
+                prev_bottom_line = sum([gp.y[4] for gp in prev_staff.grid]) / len(prev_staff.grid)
+
+                # If staffs are close, draw lines in the gap between them
+                gap_start = prev_bottom_line
+                gap_end = top_line
+                gap_size = gap_end - gap_start
+
+                # Only draw gap lines if there's a reasonable gap
+                if gap_size > unit_size:
+                    # Draw lines at half-unit intervals in the gap
+                    num_lines = int(gap_size / (unit_size / 2))
+                    for i in range(1, num_lines):
+                        y = int(gap_start + (i * gap_size / num_lines))
+                        if 0 <= y < img.shape[0] and y not in drawn_lines:
+                            cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                            drawn_lines.add(y)
+                else:
+                    # Gap is small, just draw one line in the middle
+                    y = int((gap_start + gap_end) / 2)
+                    if 0 <= y < img.shape[0] and y not in drawn_lines:
+                        cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                        drawn_lines.add(y)
+            else:
+                # First staff - draw lines above normally
+                for i in range(1, 13):  # 12 half-units above (6 full units)
+                    y = int(top_line - (i * unit_size / 2))
+                    if 0 <= y < img.shape[0] and y not in drawn_lines:
+                        cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                        drawn_lines.add(y)
+
+            # DRAW LINES BELOW THE STAFF (only for the last staff)
+            if staff_idx == len(staffs) - 1:
+                bottom_line = staff_line_positions[4]
+                for i in range(1, 13):  # 12 half-units below (6 full units)
+                    y = int(bottom_line + (i * unit_size / 2))
+                    if 0 <= y < img.shape[0] and y not in drawn_lines:
+                        cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                        drawn_lines.add(y)
+
+        output_path = os.path.join(self.output_dir, f"{self.base_name}_note_positions.png")
+        cv2.imwrite(output_path, img)
+        print(f"✓ Saved note positions grid: {output_path}")
 
     def get_summary(self) -> str:
         """Get a summary of the output directory."""

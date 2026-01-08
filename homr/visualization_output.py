@@ -376,6 +376,13 @@ class VisualizationOutput:
         # Sort red lines by Y position for easier searching
         all_red_lines.sort()
 
+        # Color for green indicator sections
+        green_color = (0, 255, 0)  # Green in BGR
+        green_section_length = 10  # Length on each side of the marker
+
+        # Store yellow marker positions to draw green sections later
+        yellow_markers = []  # List of (x, y) tuples
+
         # Now analyze each notehead group and split it
         for notehead_group in noteheads_with_stems:
             notehead = notehead_group.notehead
@@ -390,7 +397,9 @@ class VisualizationOutput:
 
             if len(lines_in_range) == 0:
                 # Single note - place one yellow marker at center
-                cv2.circle(img, (center_x, int(notehead.center[1])), marker_radius, marker_color, -1)
+                y_pos = int(notehead.center[1])
+                cv2.circle(img, (center_x, y_pos), marker_radius, marker_color, -1)
+                yellow_markers.append((center_x, y_pos))
             else:
                 # Calculate how many FULL LINE DISTANCES are spanned
                 # A note takes up 2 half-lines (one full line distance)
@@ -423,6 +432,18 @@ class VisualizationOutput:
                         y_pos = int(top_y + (i + 0.5) * height_px / num_notes)
 
                     cv2.circle(img, (center_x, y_pos), marker_radius, marker_color, -1)
+                    yellow_markers.append((center_x, y_pos))
+
+        # Now draw green sections on red lines where yellow markers touch
+        for marker_x, marker_y in yellow_markers:
+            # Find the closest red line to this marker
+            closest_line_y = min(all_red_lines, key=lambda line_y: abs(line_y - marker_y))
+
+            # Draw green sections on the left and right of the marker
+            left_x = max(0, marker_x - green_section_length)
+            right_x = min(img_width - 1, marker_x + green_section_length)
+
+            cv2.line(img, (left_x, closest_line_y), (right_x, closest_line_y), green_color, line_thickness)
 
         output_path = os.path.join(self.output_dir, f"{self.base_name}_note_splitting.png")
         cv2.imwrite(output_path, img)

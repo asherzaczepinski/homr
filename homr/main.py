@@ -44,7 +44,26 @@ from homr.transformer.configs import Config, default_config
 from homr.type_definitions import NDArray
 from homr.visualization_output import VisualizationOutput
 
+# Import Orchestra-AI-2 for accidental detection
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'Orchestra-AI-2'))
+try:
+    from test_accidentals import AccidentalDetector
+    ACCIDENTAL_DETECTOR_AVAILABLE = True
+except ImportError as e:
+    ACCIDENTAL_DETECTOR_AVAILABLE = False
+    eprint("⚠ WARNING: Orchestra-AI-2 accidental detector not available")
+    eprint(f"⚠ Import error: {e}")
+    eprint("⚠ Will use geometric fallback method for accidental detection")
+
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+
+@dataclass
+class AccidentalDetection:
+    """Represents a detected accidental with its class name."""
+    bbox: RotatedBoundingBox
+    class_name: str
+    confidence: float
 
 
 class PredictedSymbols:
@@ -55,12 +74,14 @@ class PredictedSymbols:
         clefs_keys: list[RotatedBoundingBox],
         stems_rest: list[RotatedBoundingBox],
         bar_lines: list[RotatedBoundingBox],
+        accidentals: list[AccidentalDetection] | None = None,
     ) -> None:
         self.noteheads = noteheads
         self.staff_fragments = staff_fragments
         self.clefs_keys = clefs_keys
         self.stems_rest = stems_rest
         self.bar_lines = bar_lines
+        self.accidentals = accidentals or []
 
 
 class InvalidProgramArgumentException(Exception):
@@ -165,44 +186,137 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
         predictions.staff, skip_merging=True, min_size=(5, 1), max_size=(10000, 100)
     )
 
-    eprint("Creating bounds for accidentals (sharps, flats, naturals)")
-    # Detect all symbols first
-    all_symbols = create_rotated_bounding_boxes(
-        predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000), skip_merging=True
-    )
+    # Use Orchestra-AI-2 for accidental detection
+    accidental_detections = []
+    clefs_keys = []  # Will store bounding boxes for compatibility
+    use_orchestra_ai = ACCIDENTAL_DETECTOR_AVAILABLE
 
-    # Separate accidentals from clefs based on size
-    # Accidentals are typically 15-35 pixels tall, clefs are 40+ pixels tall
-    accidentals_only = []
-    clefs_only = []
-    for symbol in all_symbols:
-        # Get symbol height
-        height = symbol.size[1]
-        if height < 38:
-            accidentals_only.append(symbol)
-        else:
-            clefs_only.append(symbol)
+    if use_orchestra_ai:
+        eprint("Using Orchestra-AI-2 for accidental detection")
+        try:
+            # Initialize Orchestra-AI-2 accidental detector
+            model_path = os.path.join(os.path.dirname(__file__), '..', 'Orchestra-AI-2', 'weights', 'best.pt')
+            detector = AccidentalDetector(model_path=model_path, confidence_threshold=0.3)
 
-    eprint(f"Found {len(all_symbols)} symbols: {len(accidentals_only)} accidentals, {len(clefs_only)} clefs")
+            # Convert preprocessed image to RGB for detection
+            img_rgb = cv2.cvtColor(predictions.preprocessed, cv2.COLOR_GRAY2RGB)
 
-    # Filter out accidentals that overlap >50% with clefs
-    filtered_accidentals = []
-    for accidental in accidentals_only:
-        overlaps_clef = False
-        for clef in clefs_only:
-            overlap_pct = calculate_overlap_percentage(accidental, clef)
-            if overlap_pct > 0.5:
-                overlaps_clef = True
-                break
+            # Run detection
+            detections = detector.detect_in_image(img_rgb)
+            eprint(f"Found {len(detections)} accidentals using Orchestra-AI-2")
 
-        if not overlaps_clef:
-            filtered_accidentals.append(accidental)
+            # Remove overlapping detections (>50% overlap), keeping higher confidence
+            filtered_detections = []
+            for i, det in enumerate(detections):
+                should_keep = True
+                for j, other_det in enumerate(detections):
+                    if i == j:
+                        continue
 
-    removed_overlap = len(accidentals_only) - len(filtered_accidentals)
-    eprint(f"Removed {removed_overlap} accidentals overlapping with clefs (>50%)")
-    eprint(f"Final: {len(filtered_accidentals)} accidentals")
+                    # Calculate overlap percentage
+                    x_overlap = max(0, min(det.x2, other_det.x2) - max(det.x1, other_det.x1))
+                    y_overlap = max(0, min(det.y2, other_det.y2) - max(det.y1, other_det.y1))
+                    overlap_area = x_overlap * y_overlap
 
-    clefs_keys = filtered_accidentals
+                    det_area = (det.x2 - det.x1) * (det.y2 - det.y1)
+                    if det_area == 0:
+                        continue
+
+                    overlap_pct = overlap_area / det_area
+
+                    # If overlap > 50% and this detection has lower confidence, remove it
+                    if overlap_pct > 0.5 and det.confidence < other_det.confidence:
+                        should_keep = False
+                        break
+
+                if should_keep:
+                    filtered_detections.append(det)
+
+            removed_count = len(detections) - len(filtered_detections)
+            if removed_count > 0:
+                eprint(f"Removed {removed_count} overlapping accidentals (>50% overlap, lower confidence)")
+
+            detections = filtered_detections
+            eprint(f"Final count: {len(detections)} accidentals after overlap removal")
+
+            # Convert Orchestra-AI-2 detections to our format
+            for det in detections:
+                # Create a simple bounding box from the detection
+                center = ((det.x1 + det.x2) / 2, (det.y1 + det.y2) / 2)
+                size = (det.x2 - det.x1, det.y2 - det.y1)
+
+                # Create a simple rectangular contour from the bounding box
+                x1, y1 = int(det.x1), int(det.y1)
+                x2, y2 = int(det.x2), int(det.y2)
+                contours = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
+
+                # Create RotatedBoundingBox in OpenCV RotatedRect format: ((center_x, center_y), (width, height), angle)
+                rotated_rect = (center, size, 0.0)
+                bbox = RotatedBoundingBox(rotated_rect, contours)
+
+                accidental_detections.append(
+                    AccidentalDetection(
+                        bbox=bbox,
+                        class_name=det.class_name,
+                        confidence=det.confidence
+                    )
+                )
+                clefs_keys.append(bbox)  # For compatibility with existing code
+
+            # Count by type
+            type_counts = {}
+            for det in accidental_detections:
+                type_counts[det.class_name] = type_counts.get(det.class_name, 0) + 1
+
+            eprint("Accidental breakdown:")
+            for class_name, count in sorted(type_counts.items()):
+                eprint(f"  {class_name}: {count}")
+
+        except Exception as e:
+            eprint(f"⚠ ERROR using Orchestra-AI-2 detector: {e}")
+            eprint("⚠ FALLING BACK to geometric method")
+            use_orchestra_ai = False
+
+    # Fallback to original method if Orchestra-AI-2 is not available
+    if not use_orchestra_ai or len(accidental_detections) == 0:
+        eprint("⚠ FALLBACK: Creating bounds for accidentals (sharps, flats, naturals) - using geometric method")
+        # Detect all symbols first
+        all_symbols = create_rotated_bounding_boxes(
+            predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000), skip_merging=True
+        )
+
+        # Separate accidentals from clefs based on size
+        # Accidentals are typically 15-35 pixels tall, clefs are 40+ pixels tall
+        accidentals_only = []
+        clefs_only = []
+        for symbol in all_symbols:
+            # Get symbol height
+            height = symbol.size[1]
+            if height < 38:
+                accidentals_only.append(symbol)
+            else:
+                clefs_only.append(symbol)
+
+        eprint(f"Found {len(all_symbols)} symbols: {len(accidentals_only)} accidentals, {len(clefs_only)} clefs")
+
+        # Filter out accidentals that overlap >50% with clefs
+        filtered_accidentals = []
+        for accidental in accidentals_only:
+            overlaps_clef = False
+            for clef in clefs_only:
+                overlap_pct = calculate_overlap_percentage(accidental, clef)
+                if overlap_pct > 0.5:
+                    overlaps_clef = True
+                    break
+
+            if not overlaps_clef:
+                filtered_accidentals.append(accidental)
+
+        removed_overlap = len(accidentals_only) - len(filtered_accidentals)
+        eprint(f"Removed {removed_overlap} accidentals overlapping with clefs (>50%)")
+        eprint(f"Final: {len(filtered_accidentals)} accidentals")
+
+        clefs_keys = filtered_accidentals
 
     eprint("Creating bounds for stems_rest")
     stems_rest = create_rotated_bounding_boxes(predictions.stems_rest)
@@ -211,7 +325,7 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
     debug.write_threshold_image("bar_line_img", bar_line_img)
     bar_lines = create_rotated_bounding_boxes(bar_line_img, skip_merging=True, min_size=(1, 5))
 
-    return PredictedSymbols(noteheads, staff_fragments, clefs_keys, stems_rest, bar_lines)
+    return PredictedSymbols(noteheads, staff_fragments, clefs_keys, stems_rest, bar_lines, accidental_detections)
 
 
 @dataclass
@@ -319,7 +433,7 @@ def detect_staffs_in_image(
 
     # Save symbols detection visualization
     if viz_output is not None:
-        viz_output.save_symbols_detection(symbols.clefs_keys)
+        viz_output.save_symbols_detection(symbols.clefs_keys, symbols.accidentals)
 
     symbols.staff_fragments = break_wide_fragments(symbols.staff_fragments)
     debug.write_bounding_boxes("staff_fragments", symbols.staff_fragments)

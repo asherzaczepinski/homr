@@ -143,19 +143,96 @@ class VisualizationOutput:
         else:
             return "natural"
 
-    def save_symbols_detection(self, clefs_keys: list[DebugDrawable]) -> None:
+    def save_symbols_detection(self, clefs_keys: list[DebugDrawable], accidental_detections: list = None) -> None:
         """
         Save accidentals (sharps/flats/naturals) detection visualization.
-        Color-coded: Red = sharps, Light Blue = flats, Green = naturals
+        Uses Orchestra-AI-2 style when available, or falls back to geometry.
 
         Args:
             clefs_keys: List of detected accidental bounding boxes
+            accidental_detections: Optional list of AccidentalDetection objects from Orchestra-AI-2
         """
         if self.original_image is None:
             return
 
         img = self.original_image.copy()
 
+        # If we have Orchestra-AI-2 detections, use their native drawing style
+        if accidental_detections and len(accidental_detections) > 0:
+            print("✓ Using Orchestra-AI-2 detections for visualization")
+
+            # Draw using Orchestra-AI-2 style (labels with confidence)
+            try:
+                # Draw each detection with labels and confidence scores
+                for det in accidental_detections:
+                    # Get bounding box coordinates from RotatedBoundingBox
+                    top_left = det.bbox.top_left
+                    bottom_right = det.bbox.bottom_right
+                    x1, y1 = int(top_left[0]), int(top_left[1])
+                    x2, y2 = int(bottom_right[0]), int(bottom_right[1])
+
+                    color = (0, 255, 255)  # Cyan in BGR
+                    thickness = 2
+
+                    # Draw box
+                    cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+
+                    # Draw green reference line based on accidental type
+                    green_color = (0, 255, 0)  # Green in BGR
+                    green_thickness = 1
+
+                    class_name = det.class_name.lower()
+                    height = y2 - y1
+
+                    # Sharp and Natural: line at middle (50%)
+                    if 'sharp' in class_name or 'natural' in class_name:
+                        line_y = int(y1 + height * 0.5)
+                        cv2.line(img, (x1, line_y), (x2, line_y), green_color, green_thickness)
+                    # Flat: line at bottom 1/4 (75% from top)
+                    elif 'flat' in class_name:
+                        line_y = int(y1 + height * 0.75)
+                        cv2.line(img, (x1, line_y), (x2, line_y), green_color, green_thickness)
+
+                    # Draw label with class name and confidence
+                    # Shorten class name for display
+                    short_name = det.class_name.replace('accidental', '').replace('key', 'key')
+                    label = f"{short_name} {det.confidence:.2f}"
+
+                    # Draw label background
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    font_thickness = 1
+                    (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
+
+                    # Draw filled rectangle for label background
+                    cv2.rectangle(img, (x1, y1 - text_h - 8), (x1 + text_w + 4, y1), color, -1)
+
+                    # Draw text
+                    cv2.putText(img, label, (x1 + 2, y1 - 4), font, font_scale, (0, 0, 0), font_thickness)
+
+                # Count by type
+                counts = {}
+                for det in accidental_detections:
+                    counts[det.class_name] = counts.get(det.class_name, 0) + 1
+
+                output_path = os.path.join(self.output_dir, f"{self.base_name}_accidentals.png")
+                cv2.imwrite(output_path, img)
+
+                # Format count summary
+                count_str = ", ".join([f"{count} {name}" for name, count in counts.items()])
+                print(f"✓ Saved accidentals detection: {output_path} ({len(accidental_detections)} total: {count_str})")
+
+            except Exception as e:
+                print(f"Warning: Could not use Orchestra-AI-2 drawing style: {e}")
+                print("Falling back to basic visualization")
+                self._draw_fallback_visualization(img, clefs_keys)
+        else:
+            # Fallback to geometric classification
+            print("⚠ FALLBACK: Using geometric classification for accidental visualization (Orchestra-AI-2 not available)")
+            self._draw_fallback_visualization(img, clefs_keys)
+
+    def _draw_fallback_visualization(self, img: NDArray, clefs_keys: list[DebugDrawable]) -> None:
+        """Draw fallback visualization using geometric classification."""
         # Create semi-transparent overlay for better visibility
         overlay = img.copy()
 
@@ -203,7 +280,10 @@ class VisualizationOutput:
 
         output_path = os.path.join(self.output_dir, f"{self.base_name}_accidentals.png")
         cv2.imwrite(output_path, img)
-        print(f"✓ Saved accidentals detection: {output_path} ({len(clefs_keys)} accidentals: {counts['sharp']} sharps, {counts['flat']} flats, {counts['natural']} naturals)")
+
+        # Format count summary
+        count_str = ", ".join([f"{count} {name}" for name, count in counts.items()])
+        print(f"✓ Saved accidentals detection: {output_path} ({len(clefs_keys)} total: {count_str})")
 
     def save_musicxml(self, xml_content: str) -> str:
         """

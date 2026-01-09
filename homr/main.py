@@ -143,12 +143,24 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
         predictions.staff, skip_merging=True, min_size=(5, 1), max_size=(10000, 100)
     )
 
-    eprint("Creating bounds for clefs_keys")
-    # Lower min_size to capture key signature sharps/flats (smaller than clefs)
-    # skip_merging=True to show individual sharps/flats separately
-    clefs_keys = create_rotated_bounding_boxes(
+    eprint("Creating bounds for accidentals (sharps, flats, naturals)")
+    # Detect all symbols first
+    all_symbols = create_rotated_bounding_boxes(
         predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000), skip_merging=True
     )
+
+    # Filter to keep only accidentals (small symbols), remove clefs (large symbols)
+    # Accidentals are typically 15-35 pixels tall, clefs are 40+ pixels tall
+    accidentals_only = []
+    for symbol in all_symbols:
+        # Get symbol height
+        height = symbol.size[1]
+        # Keep only symbols smaller than 38 pixels (accidentals)
+        if height < 38:
+            accidentals_only.append(symbol)
+
+    eprint(f"Filtered {len(all_symbols)} symbols -> {len(accidentals_only)} accidentals (removed {len(all_symbols) - len(accidentals_only)} clefs)")
+    clefs_keys = accidentals_only
 
     eprint("Creating bounds for stems_rest")
     stems_rest = create_rotated_bounding_boxes(predictions.stems_rest)

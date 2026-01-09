@@ -115,10 +115,10 @@ class VisualizationOutput:
 
     def save_symbols_detection(self, clefs_keys: list[DebugDrawable]) -> None:
         """
-        Save symbols (clefs/keys) detection visualization.
+        Save accidentals (sharps/flats/naturals) detection visualization.
 
         Args:
-            clefs_keys: List of detected symbol bounding boxes
+            clefs_keys: List of detected accidental bounding boxes
         """
         if self.original_image is None:
             return
@@ -155,9 +155,9 @@ class VisualizationOutput:
         # Blend overlay with original
         img = cv2.addWeighted(img, 0.6, overlay, 0.4, 0)
 
-        output_path = os.path.join(self.output_dir, f"{self.base_name}_symbols.png")
+        output_path = os.path.join(self.output_dir, f"{self.base_name}_accidentals.png")
         cv2.imwrite(output_path, img)
-        print(f"✓ Saved symbols detection: {output_path} ({len(clefs_keys)} symbols)")
+        print(f"✓ Saved accidentals detection: {output_path} ({len(clefs_keys)} accidentals)")
 
     def save_musicxml(self, xml_content: str) -> str:
         """

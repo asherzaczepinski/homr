@@ -285,6 +285,144 @@ class VisualizationOutput:
         count_str = ", ".join([f"{count} {name}" for name, count in counts.items()])
         print(f"✓ Saved accidentals detection: {output_path} ({len(clefs_keys)} total: {count_str})")
 
+    def save_accidental_positions_analysis(self, staffs: list, accidental_detections: list) -> None:
+        """
+        Show which red line each accidental belongs to, similar to note splitting analysis.
+        Draws red lines for all possible note positions, then marks where each accidental goes with green.
+
+        Args:
+            staffs: List of detected Staff objects
+            accidental_detections: List of AccidentalDetection objects from Orchestra-AI-2
+        """
+        if self.original_image is None:
+            return
+
+        img = self.original_image.copy()
+
+        # Color for the position lines (red)
+        line_color = (0, 0, 255)  # Red in BGR
+        line_thickness = 1
+
+        # Color for accidental markers (green)
+        green_color = (0, 255, 0)  # Green in BGR
+        green_section_length = 10  # Length on each side of the marker
+
+        # Get full image width
+        img_width = img.shape[1]
+
+        # Calculate and draw all red lines, storing their Y positions
+        all_red_lines = []  # List of Y positions
+        drawn_lines = set()
+
+        for staff_idx, staff in enumerate(staffs):
+            unit_size = staff.average_unit_size
+
+            # Get the 5 actual staff line Y positions
+            staff_line_positions = []
+            for line_idx in range(5):
+                y_values = [grid_point.y[line_idx] for grid_point in staff.grid]
+                avg_y = sum(y_values) / len(y_values)
+                staff_line_positions.append(avg_y)
+
+            # DRAW THE 5 ACTUAL STAFF LINES
+            for staff_line_y in staff_line_positions:
+                y = int(staff_line_y)
+                if 0 <= y < img.shape[0]:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                    all_red_lines.append(y)
+                    drawn_lines.add(y)
+
+            # DRAW THE 4 SPACES BETWEEN STAFF LINES
+            for i in range(4):
+                space_y = (staff_line_positions[i] + staff_line_positions[i + 1]) / 2
+                y = int(space_y)
+                if 0 <= y < img.shape[0] and y not in drawn_lines:
+                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                    all_red_lines.append(y)
+                    drawn_lines.add(y)
+
+            # DRAW LINES ABOVE THE STAFF
+            top_line = staff_line_positions[0]
+
+            if staff_idx > 0:
+                prev_staff = staffs[staff_idx - 1]
+                prev_bottom_line = sum([gp.y[4] for gp in prev_staff.grid]) / len(prev_staff.grid)
+                gap_start = prev_bottom_line
+                gap_end = top_line
+                gap_size = gap_end - gap_start
+
+                if gap_size > unit_size:
+                    num_lines = int(gap_size / (unit_size / 2))
+                    for i in range(1, num_lines):
+                        y = int(gap_start + (i * gap_size / num_lines))
+                        if 0 <= y < img.shape[0] and y not in drawn_lines:
+                            cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                            all_red_lines.append(y)
+                            drawn_lines.add(y)
+                else:
+                    y = int((gap_start + gap_end) / 2)
+                    if 0 <= y < img.shape[0] and y not in drawn_lines:
+                        cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                        all_red_lines.append(y)
+                        drawn_lines.add(y)
+            else:
+                for i in range(1, 13):
+                    y = int(top_line - (i * unit_size / 2))
+                    if 0 <= y < img.shape[0] and y not in drawn_lines:
+                        cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                        all_red_lines.append(y)
+                        drawn_lines.add(y)
+
+            # DRAW LINES BELOW THE STAFF (only for last staff)
+            if staff_idx == len(staffs) - 1:
+                bottom_line = staff_line_positions[4]
+                for i in range(1, 13):
+                    y = int(bottom_line + (i * unit_size / 2))
+                    if 0 <= y < img.shape[0] and y not in drawn_lines:
+                        cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                        all_red_lines.append(y)
+                        drawn_lines.add(y)
+
+        # Sort red lines by Y position for easier searching
+        all_red_lines.sort()
+
+        # Now process each accidental detection
+        if accidental_detections:
+            for detection in accidental_detections:
+                # Get the reference line Y position from the accidental
+                # (the green line we drew on the accidental)
+                top_left = detection.bbox.top_left
+                bottom_right = detection.bbox.bottom_right
+                y1 = top_left[1]
+                y2 = bottom_right[1]
+                height = y2 - y1
+
+                class_name = detection.class_name.lower()
+
+                # Calculate the reference Y position based on accidental type
+                if 'sharp' in class_name or 'natural' in class_name:
+                    ref_y = y1 + height * 0.5  # Middle
+                elif 'flat' in class_name:
+                    ref_y = y1 + height * 0.75  # Bottom 1/4
+                else:
+                    ref_y = (y1 + y2) / 2  # Default to middle
+
+                # Find the closest red line to this reference position
+                closest_line_y = min(all_red_lines, key=lambda line_y: abs(line_y - ref_y))
+
+                # Get the horizontal center of the accidental
+                center_x = int((top_left[0] + bottom_right[0]) / 2)
+
+                # Draw green section on the red line where this accidental belongs
+                left_x = max(0, center_x - green_section_length)
+                right_x = min(img_width - 1, center_x + green_section_length)
+
+                cv2.line(img, (left_x, closest_line_y), (right_x, closest_line_y), green_color, 2)
+
+        output_path = os.path.join(self.output_dir, f"{self.base_name}_accidentals2.png")
+        cv2.imwrite(output_path, img)
+        print(f"✓ Saved accidental positions analysis: {output_path}")
+
     def save_musicxml(self, xml_content: str) -> str:
         """
         Save the MusicXML file to the output directory.

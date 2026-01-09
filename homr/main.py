@@ -539,6 +539,8 @@ def detect_staffs_in_image(
         viz_output.save_note_splitting_analysis(staffs, noteheads_with_stems)
         # Save accidental positions analysis (shows which red line each accidental belongs to)
         viz_output.save_accidental_positions_analysis(staffs, symbols.accidentals)
+        # Save accidental effects visualization (circles notes affected by sharps/flats)
+        viz_output.save_accidental_affected_notes(staffs, symbols.accidentals, noteheads_with_stems)
 
     brace_dot_img = prepare_brace_dot_image(predictions.symbols, predictions.staff)
     debug.write_threshold_image("brace_dot", brace_dot_img)

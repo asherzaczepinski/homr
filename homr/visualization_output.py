@@ -426,6 +426,193 @@ class VisualizationOutput:
         cv2.imwrite(output_path, img)
         print(f"✓ Saved accidental positions analysis: {output_path}")
 
+    def save_accidental_affected_notes(self, staffs: list, accidental_detections: list, noteheads_with_stems: list) -> None:
+        """
+        Circle notes that are affected by accidentals (sharps/flats).
+        Accidentals affect notes on the same line, 7 half-lines up, 14 half-lines up, etc.
+        Naturals cancel accidentals. Effects carry across the measure but not across staffs.
+
+        Args:
+            staffs: List of detected Staff objects
+            accidental_detections: List of AccidentalDetection objects from Orchestra-AI-2
+            noteheads_with_stems: List of detected noteheads
+        """
+        if self.original_image is None:
+            return
+
+        img = self.original_image.copy()
+
+        # Process each staff independently
+        for staff_idx, staff in enumerate(staffs):
+            unit_size = staff.average_unit_size
+            grid_points = staff.grid
+
+            # Build line positions for this staff (measure by measure)
+            staff_line_positions = {}  # Maps x_position -> list of y positions for lines
+
+            for grid_idx in range(len(grid_points) - 1):
+                curr_point = grid_points[grid_idx]
+                next_point = grid_points[grid_idx + 1]
+
+                x_start = curr_point.x
+                x_end = next_point.x
+                x_center = (x_start + x_end) / 2
+
+                # Get staff lines at this position
+                curr_staff_lines = [curr_point.y[i] for i in range(5)]
+                next_staff_lines = [next_point.y[i] for i in range(5)]
+
+                # Calculate all line positions (staff lines, spaces, ledgers)
+                all_lines_here = []
+
+                # 5 staff lines
+                for i in range(5):
+                    y_pos = (curr_staff_lines[i] + next_staff_lines[i]) / 2
+                    all_lines_here.append(y_pos)
+
+                # 4 spaces
+                for i in range(4):
+                    y_pos = ((curr_staff_lines[i] + curr_staff_lines[i + 1]) / 2 +
+                             (next_staff_lines[i] + next_staff_lines[i + 1]) / 2) / 2
+                    all_lines_here.append(y_pos)
+
+                # Ledger lines above (12 half-steps)
+                top_line = (curr_staff_lines[0] + next_staff_lines[0]) / 2
+                for i in range(1, 13):
+                    y_pos = top_line - (i * unit_size / 2)
+                    all_lines_here.append(y_pos)
+
+                # Ledger lines below (12 half-steps)
+                bottom_line = (curr_staff_lines[4] + next_staff_lines[4]) / 2
+                for i in range(1, 13):
+                    y_pos = bottom_line + (i * unit_size / 2)
+                    all_lines_here.append(y_pos)
+
+                # Sort by Y position and store
+                all_lines_here.sort()
+                staff_line_positions[x_center] = all_lines_here
+
+            # Track active accidentals: maps line_index -> accidental_type ('sharp', 'flat', 'natural')
+            active_accidentals = {}
+
+            # Get accidentals for this staff, sorted by X position (left to right)
+            staff_accidentals = []
+            if accidental_detections:
+                for det in accidental_detections:
+                    acc_center_x = (det.bbox.top_left[0] + det.bbox.bottom_right[0]) / 2
+                    acc_y = det.bbox.top_left[1] + (det.bbox.bottom_right[1] - det.bbox.top_left[1]) * 0.5
+                    if 'flat' in det.class_name.lower():
+                        acc_y = det.bbox.top_left[1] + (det.bbox.bottom_right[1] - det.bbox.top_left[1]) * 0.75
+
+                    # Check if this accidental is on this staff
+                    staff_y_min = min(grid_points[0].y)
+                    staff_y_max = max(grid_points[0].y)
+                    if staff_y_min - 50 <= acc_y <= staff_y_max + 50:
+                        staff_accidentals.append((acc_center_x, acc_y, det.class_name))
+
+            staff_accidentals.sort(key=lambda x: x[0])  # Sort by X position
+
+            # Process accidentals from left to right
+            for acc_x, acc_y, acc_class in staff_accidentals:
+                # Find which line this accidental is on
+                closest_x_pos = min(staff_line_positions.keys(), key=lambda x: abs(x - acc_x))
+                lines_at_pos = staff_line_positions[closest_x_pos]
+                line_idx = min(range(len(lines_at_pos)), key=lambda i: abs(lines_at_pos[i] - acc_y))
+
+                # Determine accidental type
+                acc_type = None
+                if 'sharp' in acc_class.lower():
+                    acc_type = 'sharp'
+                elif 'flat' in acc_class.lower():
+                    acc_type = 'flat'
+                elif 'natural' in acc_class.lower():
+                    acc_type = 'natural'
+
+                if acc_type:
+                    # Mark this line and all octave equivalents (7 and 14 half-steps)
+                    for offset in [0, 7, 14, -7, -14]:
+                        affected_line = line_idx + offset
+                        if 0 <= affected_line < len(lines_at_pos):
+                            if acc_type == 'natural':
+                                # Natural cancels out the accidental - REMOVE it completely
+                                if affected_line in active_accidentals:
+                                    del active_accidentals[affected_line]
+                            else:
+                                # Sharp or flat - mark it
+                                active_accidentals[affected_line] = acc_type
+
+            # Track which accidentals affect which X ranges
+            accidental_ranges = {}  # Maps (line_idx, acc_type) -> start_x position
+
+            # Re-process accidentals to track their X positions
+            current_accidentals = {}  # Maps line_idx -> (acc_type, start_x)
+            for acc_x, acc_y, acc_class in staff_accidentals:
+                closest_x_pos = min(staff_line_positions.keys(), key=lambda x: abs(x - acc_x))
+                lines_at_pos = staff_line_positions[closest_x_pos]
+                line_idx = min(range(len(lines_at_pos)), key=lambda i: abs(lines_at_pos[i] - acc_y))
+
+                acc_type = None
+                if 'sharp' in acc_class.lower():
+                    acc_type = 'sharp'
+                elif 'flat' in acc_class.lower():
+                    acc_type = 'flat'
+                elif 'natural' in acc_class.lower():
+                    acc_type = 'natural'
+
+                if acc_type:
+                    for offset in [0, 7, 14, -7, -14]:
+                        affected_line = line_idx + offset
+                        if 0 <= affected_line < len(lines_at_pos):
+                            if acc_type == 'natural':
+                                # Natural cancels - remove from tracking
+                                if affected_line in current_accidentals:
+                                    del current_accidentals[affected_line]
+                            else:
+                                # Sharp or flat - start affecting from this X position
+                                current_accidentals[affected_line] = (acc_type, acc_x)
+
+            # Now process notes and circle affected ones
+            for note in noteheads_with_stems:
+                notehead = note.notehead
+                note_center_x = notehead.center[0]
+                note_center_y = notehead.center[1]
+
+                # Check if note is on this staff
+                staff_y_min = min(grid_points[0].y)
+                staff_y_max = max(grid_points[0].y)
+                if not (staff_y_min - 50 <= note_center_y <= staff_y_max + 50):
+                    continue
+
+                # Find which line this note is on
+                closest_x_pos = min(staff_line_positions.keys(), key=lambda x: abs(x - note_center_x))
+                lines_at_pos = staff_line_positions[closest_x_pos]
+                note_line_idx = min(range(len(lines_at_pos)), key=lambda i: abs(lines_at_pos[i] - note_center_y))
+
+                # Check if this line is affected by an accidental AND note is after the accidental
+                if note_line_idx in current_accidentals:
+                    acc_type, acc_x = current_accidentals[note_line_idx]
+
+                    # Only circle if note is AFTER the accidental
+                    if note_center_x > acc_x:
+                        # Choose color based on accidental type
+                        if acc_type == 'sharp':
+                            color = (0, 0, 255)  # Red in BGR
+                        elif acc_type == 'flat':
+                            color = (255, 200, 0)  # Light blue in BGR
+                        else:
+                            color = (0, 255, 0)  # Green (shouldn't happen)
+
+                        # Draw ellipse around the note (3 extra pixels in radius)
+                        center = (int(notehead.center[0]), int(notehead.center[1]))
+                        axes = (int(notehead.size[0] / 2 + 6), int(notehead.size[1] / 2 + 6))
+                        angle = notehead.angle if hasattr(notehead, 'angle') else 0
+
+                        cv2.ellipse(img, center, axes, angle, 0, 360, color, 2)
+
+        output_path = os.path.join(self.output_dir, f"{self.base_name}_accidental_effects.png")
+        cv2.imwrite(output_path, img)
+        print(f"✓ Saved accidental effects visualization: {output_path}")
+
     def save_musicxml(self, xml_content: str) -> str:
         """
         Save the MusicXML file to the output directory.

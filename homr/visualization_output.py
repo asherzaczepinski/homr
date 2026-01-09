@@ -113,9 +113,40 @@ class VisualizationOutput:
         cv2.imwrite(output_path, img)
         print(f"✓ Saved notes detection: {output_path}")
 
+    def classify_accidental(self, symbol) -> str:
+        """
+        Classify an accidental as sharp, flat, or natural based on geometry.
+
+        Args:
+            symbol: Bounding box of the accidental
+
+        Returns:
+            "sharp", "flat", or "natural"
+        """
+        width = symbol.size[0]
+        height = symbol.size[1]
+
+        # Avoid division by zero
+        if width == 0:
+            return "natural"
+
+        aspect_ratio = height / width
+
+        # Classification based on aspect ratio:
+        # Sharp (#): Very tall and thin, aspect ratio > 2.5
+        # Flat (♭): Tall but wider, aspect ratio 1.8 - 2.5
+        # Natural (♮): More square, aspect ratio < 1.8
+        if aspect_ratio > 2.5:
+            return "sharp"
+        elif aspect_ratio > 1.8:
+            return "flat"
+        else:
+            return "natural"
+
     def save_symbols_detection(self, clefs_keys: list[DebugDrawable]) -> None:
         """
         Save accidentals (sharps/flats/naturals) detection visualization.
+        Color-coded: Red = sharps, Light Blue = flats, Green = naturals
 
         Args:
             clefs_keys: List of detected accidental bounding boxes
@@ -128,7 +159,22 @@ class VisualizationOutput:
         # Create semi-transparent overlay for better visibility
         overlay = img.copy()
 
+        # Color mapping for accidentals
+        accidental_colors = {
+            "sharp": (0, 0, 255),      # Red (BGR)
+            "flat": (255, 200, 0),     # Light Blue (BGR)
+            "natural": (0, 255, 0),    # Green (BGR)
+        }
+
+        # Count each type
+        counts = {"sharp": 0, "flat": 0, "natural": 0}
+
         for symbol in clefs_keys:
+            # Classify the accidental
+            acc_type = self.classify_accidental(symbol)
+            counts[acc_type] += 1
+            color = accidental_colors[acc_type]
+
             # Draw with thick lines (5 pixels)
             import cv2 as cv2_local
             import numpy as np
@@ -139,25 +185,25 @@ class VisualizationOutput:
                 if pts is not None:
                     pts = pts.astype(np.int32)
                     # Draw thick outline
-                    cv2_local.polylines(overlay, [pts], True, self.colors["symbols"], 5)
+                    cv2_local.polylines(overlay, [pts], True, color, 5)
                     # Draw semi-transparent fill
                     mask = np.zeros(img.shape[:2], dtype=np.uint8)
                     cv2_local.fillPoly(mask, [pts], 255)
                     overlay[mask > 0] = cv2_local.addWeighted(
                         overlay[mask > 0], 0.7,
-                        np.full_like(overlay[mask > 0], self.colors["symbols"]), 0.3,
+                        np.full_like(overlay[mask > 0], color), 0.3,
                         0
                     )
             else:
                 # Fallback to regular drawing
-                symbol.draw_onto_image(overlay, self.colors["symbols"])
+                symbol.draw_onto_image(overlay, color)
 
         # Blend overlay with original
         img = cv2.addWeighted(img, 0.6, overlay, 0.4, 0)
 
         output_path = os.path.join(self.output_dir, f"{self.base_name}_accidentals.png")
         cv2.imwrite(output_path, img)
-        print(f"✓ Saved accidentals detection: {output_path} ({len(clefs_keys)} accidentals)")
+        print(f"✓ Saved accidentals detection: {output_path} ({len(clefs_keys)} accidentals: {counts['sharp']} sharps, {counts['flat']} flats, {counts['natural']} naturals)")
 
     def save_musicxml(self, xml_content: str) -> str:
         """

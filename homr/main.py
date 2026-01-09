@@ -135,6 +135,28 @@ def load_and_preprocess_predictions(
     return predictions, debug
 
 
+def calculate_overlap_percentage(box1, box2):
+    """Calculate what percentage of box1 overlaps with box2."""
+    # Get bounding rectangles
+    x1_min, y1_min = box1.top_left
+    x1_max, y1_max = box1.bottom_right
+    x2_min, y2_min = box2.top_left
+    x2_max, y2_max = box2.bottom_right
+
+    # Calculate intersection
+    x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
+    y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
+    overlap_area = x_overlap * y_overlap
+
+    # Calculate box1's area
+    box1_area = (x1_max - x1_min) * (y1_max - y1_min)
+
+    if box1_area == 0:
+        return 0
+
+    return overlap_area / box1_area
+
+
 def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSymbols:
     eprint("Creating bounds for noteheads")
     noteheads = create_bounding_ellipses(predictions.notehead, min_size=(4, 4))
@@ -149,18 +171,38 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
         predictions.clefs_keys, min_size=(10, 15), max_size=(1000, 1000), skip_merging=True
     )
 
-    # Filter to keep only accidentals (small symbols), remove clefs (large symbols)
+    # Separate accidentals from clefs based on size
     # Accidentals are typically 15-35 pixels tall, clefs are 40+ pixels tall
     accidentals_only = []
+    clefs_only = []
     for symbol in all_symbols:
         # Get symbol height
         height = symbol.size[1]
-        # Keep only symbols smaller than 38 pixels (accidentals)
         if height < 38:
             accidentals_only.append(symbol)
+        else:
+            clefs_only.append(symbol)
 
-    eprint(f"Filtered {len(all_symbols)} symbols -> {len(accidentals_only)} accidentals (removed {len(all_symbols) - len(accidentals_only)} clefs)")
-    clefs_keys = accidentals_only
+    eprint(f"Found {len(all_symbols)} symbols: {len(accidentals_only)} accidentals, {len(clefs_only)} clefs")
+
+    # Filter out accidentals that overlap >50% with clefs
+    filtered_accidentals = []
+    for accidental in accidentals_only:
+        overlaps_clef = False
+        for clef in clefs_only:
+            overlap_pct = calculate_overlap_percentage(accidental, clef)
+            if overlap_pct > 0.5:
+                overlaps_clef = True
+                break
+
+        if not overlaps_clef:
+            filtered_accidentals.append(accidental)
+
+    removed_overlap = len(accidentals_only) - len(filtered_accidentals)
+    eprint(f"Removed {removed_overlap} accidentals overlapping with clefs (>50%)")
+    eprint(f"Final: {len(filtered_accidentals)} accidentals")
+
+    clefs_keys = filtered_accidentals
 
     eprint("Creating bounds for stems_rest")
     stems_rest = create_rotated_bounding_boxes(predictions.stems_rest)

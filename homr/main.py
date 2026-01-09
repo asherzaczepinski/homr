@@ -283,11 +283,60 @@ def detect_staffs_in_image(
     debug.write_bounding_boxes("staff_fragments", symbols.staff_fragments)
     eprint("Found " + str(len(symbols.staff_fragments)) + " staff line fragments")
 
+    # Calculate average staff line height (thickness) from staff fragments
+    if len(symbols.staff_fragments) > 0:
+        staff_line_heights = [fragment.size[1] for fragment in symbols.staff_fragments]
+        average_staff_line_height = float(np.median(staff_line_heights))
+        eprint(f"Average staff line height (thickness): {average_staff_line_height:.2f} pixels")
+    else:
+        average_staff_line_height = 2.0  # fallback
+        eprint("Warning: No staff fragments found, using fallback line height")
+
+    # Calculate average distance between staff lines (spacing)
+    # Sort staff fragments by Y position and calculate distances between consecutive lines
+    if len(symbols.staff_fragments) > 5:
+        # Get Y centers of all staff line fragments
+        staff_y_positions = sorted([fragment.center[1] for fragment in symbols.staff_fragments])
+
+        # Calculate distances between consecutive lines
+        line_distances = []
+        for i in range(len(staff_y_positions) - 1):
+            distance = staff_y_positions[i + 1] - staff_y_positions[i]
+            # Only consider reasonable distances (filter out lines from same staff vs different staff)
+            if 5 < distance < 50:  # reasonable range for lines in same staff
+                line_distances.append(distance)
+
+        if line_distances:
+            average_line_spacing = float(np.median(line_distances))
+            eprint(f"Average distance between staff lines (spacing): {average_line_spacing:.2f} pixels")
+        else:
+            average_line_spacing = 16.0  # fallback
+            eprint("Warning: Could not calculate line spacing, using fallback")
+    else:
+        average_line_spacing = 16.0  # fallback
+        eprint("Warning: Not enough staff fragments, using fallback spacing")
+
     noteheads_with_stems = combine_noteheads_with_stems(symbols.noteheads, symbols.stems_rest)
     debug.write_bounding_boxes_alternating_colors("notehead_with_stems", noteheads_with_stems)
-    eprint("Found " + str(len(noteheads_with_stems)) + " noteheads")
+    eprint("Found " + str(len(noteheads_with_stems)) + " noteheads (before filtering)")
+
+    # Minimum note size = average spacing between lines (the difference)
+    min_note_size = average_line_spacing
+    eprint(f"Minimum note size threshold: {min_note_size:.2f}px (average spacing between lines)")
+
+    filtered_noteheads = []
+    for notehead in noteheads_with_stems:
+        width = notehead.notehead.size[0]
+        height = notehead.notehead.size[1]
+        if width >= min_note_size and height >= min_note_size:
+            filtered_noteheads.append(notehead)
+
+    removed_count = len(noteheads_with_stems) - len(filtered_noteheads)
+    eprint(f"Filtered notes: kept {len(filtered_noteheads)}, removed {removed_count} (threshold: {min_note_size:.2f}px)")
+    noteheads_with_stems = filtered_noteheads
+
     if len(noteheads_with_stems) == 0:
-        raise Exception("No noteheads found")
+        raise Exception("No noteheads found after filtering")
 
     # Save notes detection visualization
     if viz_output is not None:

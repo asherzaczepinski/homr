@@ -418,7 +418,10 @@ class VisualizationOutput:
                 # So number of notes = height / (2 * half_line_spacing)
                 # Since half_line_spacing = avg_spacing, a full line distance = 2 * avg_spacing
                 note_height = 2 * avg_spacing
-                num_notes = max(1, round(height_px / note_height))
+                if note_height > 0:
+                    num_notes = max(1, round(height_px / note_height))
+                else:
+                    num_notes = 1
 
                 # Place yellow markers evenly distributed through the chord
                 for i in range(num_notes):

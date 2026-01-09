@@ -16,6 +16,7 @@ from homr.bar_line_detection import (
     detect_bar_lines,
     prepare_bar_line_image,
 )
+from homr.deskew import deskew_image
 from homr.bounding_boxes import (
     BoundingEllipse,
     RotatedBoundingBox,
@@ -111,6 +112,11 @@ def load_and_preprocess_predictions(
         raise InvalidProgramArgumentException(
             "The file format is not supported, please provide a JPG or PNG image file:" + image_path
         )
+
+    # Apply deskewing before other preprocessing
+    eprint("Deskewing image...")
+    image = deskew_image(image)
+
     image = autocrop(image)
     image = resize_image(image)
     preprocessed, _background = color_adjust.color_adjust(image, 40)

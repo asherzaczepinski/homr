@@ -26,9 +26,8 @@ class VisualizationOutput:
         """
         self.image_path = image_path
 
-        # Create output directory path relative to the image location
-        image_dir = os.path.dirname(os.path.abspath(image_path))
-        self.output_dir = os.path.join(image_dir, output_dir)
+        # Create output directory path in the current working directory
+        self.output_dir = output_dir
 
         # Get base filename without extension
         self.base_name = Path(image_path).stem
@@ -48,7 +47,11 @@ class VisualizationOutput:
         }
 
     def _setup_output_dir(self) -> None:
-        """Create the output directory if it doesn't exist."""
+        """Clear and create the output directory."""
+        # Remove existing output directory if it exists
+        if os.path.exists(self.output_dir):
+            shutil.rmtree(self.output_dir)
+        # Create fresh output directory
         os.makedirs(self.output_dir, exist_ok=True)
 
     def set_original_image(self, image: NDArray) -> None:

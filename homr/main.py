@@ -399,7 +399,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="homer", description="An optical music recognition (OMR) system"
     )
-    parser.add_argument("image", type=str, nargs="?", help="Path to the image to process")
+    parser.add_argument(
+        "image", type=str, nargs="?", default="input.png",
+        help="Path to the image to process (default: input.png)"
+    )
     parser.add_argument(
         "--init",
         action="store_true",
@@ -467,32 +470,15 @@ def main() -> None:
         args.output_large_page, args.output_metronome, args.output_tempo
     )
 
-    if not args.image:
-        eprint("No image provided")
-        parser.print_help()
+    # Check if input file exists
+    if not os.path.isfile(args.image):
+        eprint(f"Error: Input file '{args.image}' not found")
         sys.exit(1)
-    elif os.path.isfile(args.image):
-        try:
-            process_image(args.image, config, xml_generator_args)
-        except InvalidProgramArgumentException as e:
-            eprint(str(e))
-            sys.exit(2)
-    elif os.path.isdir(args.image):
-        image_files = get_all_image_files_in_folder(args.image)
-        eprint("Processing", len(image_files), "files:", image_files)
-        error_files = []
-        for image_file in image_files:
-            eprint("=========================================")
-            try:
-                process_image(image_file, config, xml_generator_args)
-                eprint("Finished", image_file)
-            except Exception as e:
-                eprint(f"An error occurred while processing {image_file}: {e}")
-                error_files.append(image_file)
-        if len(error_files) > 0:
-            eprint("Errors occurred while processing the following files:", error_files)
-    else:
-        eprint(f"{args.image} is not a valid file or directory")
+
+    try:
+        process_image(args.image, config, xml_generator_args)
+    except InvalidProgramArgumentException as e:
+        eprint(str(e))
         sys.exit(2)
 
 

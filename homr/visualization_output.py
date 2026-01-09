@@ -48,9 +48,7 @@ class VisualizationOutput:
         }
 
     def _setup_output_dir(self) -> None:
-        """Clear and recreate the output directory."""
-        if os.path.exists(self.output_dir):
-            shutil.rmtree(self.output_dir)
+        """Create the output directory if it doesn't exist."""
         os.makedirs(self.output_dir, exist_ok=True)
 
     def set_original_image(self, image: NDArray) -> None:

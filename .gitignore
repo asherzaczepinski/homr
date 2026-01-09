@@ -48,6 +48,9 @@ _build/
 /*.txt
 *_ser.txt
 
+# Allow the temp_homr pipeline explanation
+!temp_homr_pipeline_explanation.txt
+
 /lightning_logs
 /*.safetensors
 /runs

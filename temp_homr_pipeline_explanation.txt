@@ -1,0 +1,669 @@
+================================================================================
+TEMP_HOMR NOTE PROCESSING PIPELINE - COMPLETE EXPLANATION
+From Note Detection to MusicXML Generation
+================================================================================
+
+This document explains the complete pipeline of how temp_homr processes notes
+after they are detected, determining their properties (letter, line position,
+duration, etc.) and converting them to MusicXML format.
+
+================================================================================
+PIPELINE OVERVIEW
+================================================================================
+
+The pipeline follows this high-level flow:
+
+1. STAFF DETECTION & PREPARATION
+   ↓
+2. NOTE DETECTION (Segmentation Model)
+   ↓
+3. POSITION CALCULATION (Staff Grid Mapping)
+   ↓
+4. TRANSFORMER INFERENCE (TrOmr Model)
+   ↓
+5. SYMBOL DECODING (Vocabulary Mapping)
+   ↓
+6. POST-PROCESSING & CLEANUP
+   ↓
+7. MUSICXML GENERATION
+
+================================================================================
+DETAILED STEP-BY-STEP BREAKDOWN
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 1: STAFF DETECTION & IMAGE PREPARATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: staff_parsing.py → prepare_staff_image()
+
+What Happens:
+- Each staff is isolated from the full sheet music image
+- The staff grid is established (5 parallel lines)
+- StaffPoint objects are created along the x-axis, each containing:
+  • x coordinate
+  • y coordinates for all 5 staff lines
+  • angle (for handling curved staves)
+  • average_unit_size (spacing between staff lines)
+
+Key Data Structure (model.py):
+  class StaffPoint:
+    - x: float                    # Horizontal position
+    - y: list[float]              # Y-coords of the 5 staff lines at this x
+    - angle: float                # Staff angle at this point
+    - average_unit_size: float    # Spacing between lines (used for positioning)
+
+Image Processing:
+- Staff region is calculated with margins
+- Image is resized to fit TrOmr's expected canvas size (2048 x 128)
+- Dewarping is applied to straighten curved staves
+- Black contours at image edges are removed
+- Final image is centered on a white canvas
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 2: NOTE HEAD DETECTION (Segmentation Phase)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: note_detection.py → add_notes_to_staffs()
+
+What Happens:
+A. Notehead & Stem Detection:
+   - Noteheads are detected as elliptical bounding boxes (BoundingEllipse)
+   - Stems are detected as rotated bounding boxes (RotatedBoundingBox)
+   - Stems are matched to noteheads by checking for overlap
+
+B. Stem Direction Determination:
+   - If stem center Y < notehead center Y: StemDirection.UP
+   - If stem center Y > notehead center Y: StemDirection.DOWN
+   - No stem: direction is None
+
+C. Clump Splitting:
+   - Adjacent noteheads that got grouped together are split
+   - Uses check_bbox_size() to recursively divide large bounding boxes
+   - Splits based on:
+     • Width (if width ≈ 2x expected notehead width)
+     • Height (if height ≈ 2x expected notehead height)
+
+D. Size Validation:
+   - Rejects noteheads that are:
+     • Too small (< 0.5 × staff unit size)
+     • Too large (width > 3× or height > 2× unit size)
+
+Key Data Structure (model.py):
+  class Note(SymbolOnStaff):
+    - box: BoundingEllipse         # Visual bounding box
+    - position: int                # Vertical position (explained next)
+    - stem: RotatedBoundingBox     # The stem (if any)
+    - stem_direction: StemDirection # UP, DOWN, or None
+    - has_dot: bool                # Duration modifier
+    - beams: list[RotatedBoundingBox]
+    - flags: list[RotatedBoundingBox]
+    - circle_of_fifth: int         # Key signature context
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 3: POSITION CALCULATION (Staff Grid Mapping)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: model.py → StaffPoint.find_position_in_unit_sizes()
+
+This is THE KEY to understanding how notes map to pitch!
+
+What is "Position"?
+- Position is an INTEGER that represents where a note sits relative to the
+  staff lines, measured in half-unit-sizes
+- Unit size = spacing between two adjacent staff lines
+- Position 0 = bottom of the staff grid
+- Each staff line and space has a unique position number
+
+How Position is Calculated:
+1. Find the notehead's center coordinates (x, y)
+2. Get the StaffPoint at that x coordinate
+3. Find the CLOSEST staff line to the notehead's y coordinate
+4. Calculate the distance from that line
+5. Convert distance to "unit sizes" (half the space between lines)
+6. Formula:
+   position = 2 × (num_lines - closest_line_index) + distance_in_unit_sizes - 1
+
+Position Example (5-line staff):
+  Position 12: ──────────────  (ledger line above)
+  Position 11:                (space)
+  Position 10: ══════════════  (top line - Line 5)
+  Position  9:                (space)
+  Position  8: ══════════════  (Line 4)
+  Position  7:                (space)
+  Position  6: ══════════════  (middle line - Line 3)
+  Position  5:                (space)
+  Position  4: ══════════════  (Line 2)
+  Position  3:                (space)
+  Position  2: ══════════════  (bottom line - Line 1)
+  Position  1:                (space below)
+  Position  0: ──────────────  (ledger line below)
+
+Note: Position alone doesn't tell you the note letter! That requires:
+      Position + Clef + Key Signature = Actual Pitch
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 4: TRANSFORMER INFERENCE (TrOmr Model)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: staff_parsing_tromr.py → parse_staff_tromr()
+          transformer/staff2score.py → Staff2Score.predict()
+
+This is where the ACTUAL note recognition happens!
+
+What is TrOmr?
+- TrOmr = Transformer-based Optical Music Recognition
+- It's an encoder-decoder transformer model
+- It reads the staff IMAGE (not just bounding boxes)
+- It outputs a SEQUENCE of musical symbols with their properties
+
+Architecture:
+  INPUT: Preprocessed staff image (grayscale, normalized)
+    ↓
+  ENCODER: Vision Transformer
+    - Converts image to context embeddings
+    - Captures spatial relationships
+    ↓
+  DECODER: Autoregressive Transformer (decoder_inference.py)
+    - Generates symbols one at a time
+    - Each symbol has 5 properties predicted simultaneously:
+      1. Rhythm (duration type: whole, half, quarter, eighth, etc.)
+      2. Pitch (note letter + octave: C4, D5, etc.)
+      3. Lift (accidental: #, b, ##, bb, N, or empty)
+      4. Articulation (staccato, fermata, tie, slur, etc.)
+      5. Position (upper/lower staff for grand staff)
+    ↓
+  OUTPUT: List of EncodedSymbol objects
+
+Decoder Generation Process:
+1. Start with BOS (Beginning of Sequence) token
+2. For each step (up to max_seq_len):
+   a. Feed previous tokens + context to decoder
+   b. Decoder outputs 5 probability distributions (logits):
+      - rhythm_logits (e.g., [0.1, 0.8, 0.05, ...] for each rhythm type)
+      - pitch_logits
+      - lift_logits
+      - articulation_logits
+      - position_logits
+   c. Apply top-k filtering (keep only top 70% probabilities)
+   d. Apply softmax to get final probabilities
+   e. Take argmax to select most likely token for each property
+   f. Decode token IDs to string labels using vocabulary
+   g. Create EncodedSymbol with all 5 properties
+   h. STOP if EOS (End of Sequence) token is predicted
+3. Return list of all EncodedSymbol objects
+
+Key Point: The transformer is looking at the ENTIRE staff image, not just
+           individual noteheads. It understands context, rhythm patterns,
+           and musical structure.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 5: SYMBOL VOCABULARY & ENCODING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: transformer/vocabulary.py → EncodedSymbol class
+
+Each musical symbol is encoded with 5 independent properties:
+
+1. RHYTHM (vocabulary.py → build_rhythm())
+   Defines WHAT TYPE of symbol and its DURATION
+
+   Examples:
+   - "note_4"        → Quarter note (kern duration 4)
+   - "note_8"        → Eighth note
+   - "note_4."       → Dotted quarter note
+   - "note_6"        → Triplet eighth (irregular duration)
+   - "note_4G"       → Grace note quarter
+   - "rest_4"        → Quarter rest
+   - "rest_1"        → Whole rest
+   - "clef_G2"       → Treble clef on line 2
+   - "clef_F4"       → Bass clef on line 4
+   - "keySignature_2" → Key sig with 2 sharps (D major)
+   - "timeSignature/4" → 4/4 time
+   - "barline"       → Single barline
+   - "repeatStart"   → Repeat start barline
+   - "chord"         → Indicates next note is part of chord
+
+   Kern Duration System (from Humdrum):
+   - 0   = Breve (double whole note)
+   - 1   = Whole note
+   - 2   = Half note
+   - 4   = Quarter note
+   - 8   = Eighth note
+   - 16  = Sixteenth note
+   - 32  = Thirty-second note
+   - 64  = Sixty-fourth note
+
+   Dots add duration:
+   - "." = adds 1/2 of base duration
+   - ".." = adds 1/2 + 1/4 of base duration
+
+   Tuplets (irregular durations):
+   - 6  = Triplet eighth (3 in time of 2)
+   - 12 = Triplet quarter
+   - 7, 11, 13, etc. = Other tuplet values
+
+2. PITCH (vocabulary.py → build_pitch())
+   The ACTUAL SOUNDING PITCH (note letter + octave)
+
+   Format: "LetterOctave"
+   Examples:
+   - "C4"  → Middle C
+   - "G5"  → G above middle C
+   - "A3"  → A below middle C
+   - "."   → No pitch (for rests, barlines, etc.)
+   - "_"   → Empty/default
+
+   Range: C0 to B9 (all possible octaves)
+
+   Note: This is the FINAL sounding pitch, already accounting for:
+   - The clef (which determines what each line means)
+   - The key signature (default sharps/flats)
+   - Any accidentals on the note
+
+3. LIFT (vocabulary.py → build_lift())
+   ACCIDENTALS that modify the pitch
+
+   Values:
+   - "_"   → No accidental (follows key signature)
+   - "#"   → Sharp (raise by semitone)
+   - "##"  → Double sharp (raise by whole tone)
+   - "b"   → Flat (lower by semitone)
+   - "bb"  → Double flat (lower by whole tone)
+   - "N"   → Natural (cancel key signature)
+   - "."   → Not applicable (for non-notes)
+
+   Note: In measure, once an accidental appears, it applies to all
+         subsequent notes of that pitch until the bar line
+
+4. ARTICULATION (vocabulary.py → build_articulation())
+   HOW THE NOTE IS PLAYED + other markings
+
+   Multiple articulations can be combined with "_":
+   Examples:
+   - "_"                  → No articulation
+   - "staccato"           → Short, detached
+   - "accent"             → Emphasized
+   - "fermata"            → Hold longer
+   - "tieStart"           → Start of tie (to next note)
+   - "tieStop"            → End of tie
+   - "slurStart"          → Start of slur
+   - "slurStop"           → End of slur
+   - "trill"              → Trill ornament
+   - "staccato_accent"    → Both staccato AND accent
+   - "slurStart_tieStart" → Slur and tie both start
+   - "."                  → Not applicable
+
+5. POSITION (vocabulary.py → build_position())
+   For GRAND STAFF: which staff is the note on?
+
+   Values:
+   - "."      → Not applicable
+   - "upper"  → Upper staff (typically treble clef)
+   - "lower"  → Lower staff (typically bass clef)
+
+EncodedSymbol Object:
+  class EncodedSymbol:
+    rhythm: str        # e.g., "note_4"
+    pitch: str         # e.g., "C4"
+    lift: str          # e.g., "#"
+    articulation: str  # e.g., "staccato"
+    position: str      # e.g., "upper"
+    coordinates: tuple[float, float] | None  # From attention mechanism
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 6: DURATION CALCULATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: vocabulary.py → kern_to_symbol_duration()
+
+How Note Duration is Calculated:
+
+1. Parse the kern string from rhythm (e.g., "note_4." → kern = "4.")
+   - Extract base number: "4"
+   - Count dots: 1
+   - Check for grace "G"
+
+2. Determine base duration (as fraction of whole note):
+   - Quarter note (4) = 1/4 whole note
+   - Eighth note (8) = 1/8 whole note
+   - Half note (2) = 1/2 whole note
+
+3. Apply dots:
+   - First dot adds 1/2 of base duration
+   - Second dot adds 1/4 of base duration
+   Example: 4. (dotted quarter) = 1/4 + 1/8 = 3/8
+
+4. Handle tuplets (irregular durations):
+   - If duration number is NOT a power of 2, it's a tuplet
+   - Example: "6" means triplet eighth (3 eighths in time of 2)
+   - Find next power of 2: 6 → 8
+   - normal_notes = 8, actual_notes = 6
+   - Duration = (1/8) × (8/6) = 1/6
+
+5. Create SymbolDuration object:
+   class SymbolDuration:
+     base_duration: Fraction   # e.g., Fraction(1, 4)
+     dots: int                 # 0, 1, or 2
+     actual_notes: int         # For tuplets
+     normal_notes: int         # For tuplets
+     fraction: Fraction        # Final duration (relative to whole)
+     kern: int                 # Original kern value
+
+Duration Examples:
+  "1"    → whole note      = Fraction(1, 1)   = 1.0
+  "2"    → half note       = Fraction(1, 2)   = 0.5
+  "4"    → quarter note    = Fraction(1, 4)   = 0.25
+  "4."   → dotted quarter  = Fraction(3, 8)   = 0.375
+  "8"    → eighth note     = Fraction(1, 8)   = 0.125
+  "6"    → triplet eighth  = Fraction(1, 6)   ≈ 0.167
+  "16"   → sixteenth       = Fraction(1, 16)  = 0.0625
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 7: POST-PROCESSING & CLEANUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: vocabulary.py → remove_duplicated_symbols()
+
+After transformer generates symbols, cleanup steps are applied:
+
+A. Group into Chords:
+   - Find sequences of symbols marked with "chord" rhythm
+   - Group consecutive notes that belong together
+
+B. Fix Over-Eager Tuplets:
+   - Transformer sometimes predicts too many tuplets
+   - Calculate typical measure duration
+   - If a measure's duration is shorter than average, remove tuplets
+   - Uses remove_tuplet() to convert irregular durations back to normal
+
+C. Remove Duplicated Pitches:
+   - Within a chord, if same pitch appears multiple times
+   - Keep the one with longest duration
+
+D. Remove Redundant Clefs/Keys/Time Signatures:
+   - Track current clef, key, and time signature
+   - Only keep changes (don't repeat identical ones)
+   - Separate tracking for upper/lower staff
+
+E. Grand Staff Position Logic:
+   - Only keep lower staff notes if there's a lower clef
+   - Otherwise move everything to upper position
+
+F. Key Signature & Accidental Management (circle_of_fifths.py):
+   - Apply key signature to determine default sharps/flats
+   - Circle of Fifths: -7 to +7
+     • 0 = C major (no sharps/flats)
+     • +1 = G major (F#), +2 = D major (F#, C#), etc.
+     • -1 = F major (Bb), -2 = Bb major (Bb, Eb), etc.
+   - Track accidentals within each measure
+   - Reset accidentals at barlines
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 8: MUSICXML GENERATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: music_xml_generator.py → generate_xml()
+
+This is where EncodedSymbol objects are converted to MusicXML format.
+
+MusicXML Structure:
+  <score-partwise>
+    <work><work-title>...</work-title></work>
+    <defaults>...</defaults>
+    <part-list>...</part-list>
+    <part id="P1">
+      <measure number="1">
+        <attributes>
+          <divisions>...</divisions>
+          <key><fifths>...</fifths></key>
+          <time>...</time>
+          <clef>...</clef>
+        </attributes>
+        <note>...</note>
+        <note>...</note>
+        ...
+      </measure>
+      <measure number="2">...</measure>
+    </part>
+  </score-partwise>
+
+Key Conversion Steps:
+
+A. Find Division Value:
+   - Division = how many units per quarter note
+   - Must be divisible by all note durations in the piece
+   - Uses LCM (Least Common Multiple) of all duration denominators
+   - Example: If piece has 1/4, 1/8, 1/6 notes:
+     • LCM(4, 8, 6) = 24
+     • Division = 24 / 4 = 6 divisions per quarter
+
+B. Group Symbols into Measures:
+   - Split at barlines, repeats
+   - Each measure becomes <measure> element
+
+C. Convert Each Symbol Type:
+
+   1. CLEFS (build_clef):
+      EncodedSymbol: rhythm="clef_G2"
+      ↓
+      <clef>
+        <sign>G</sign>
+        <line>2</line>
+      </clef>
+
+   2. KEY SIGNATURES (build_key):
+      EncodedSymbol: rhythm="keySignature_2"
+      ↓
+      <key>
+        <fifths>2</fifths>  <!-- 2 sharps = D major -->
+      </key>
+
+   3. TIME SIGNATURES (build_time_signature):
+      EncodedSymbol: rhythm="timeSignature/4"
+      ↓
+      <time>
+        <beats>4</beats>
+        <beat-type>4</beat-type>
+      </time>
+
+   4. NOTES (build_note_or_rest):
+      EncodedSymbol:
+        rhythm="note_4", pitch="C4", lift="#",
+        articulation="staccato", position="upper"
+      ↓
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>  <!-- # = +1, b = -1 -->
+          <octave>4</octave>
+        </pitch>
+        <duration>6</duration>  <!-- = 1/4 × division(24) = 6 -->
+        <type>quarter</type>
+        <staff>1</staff>  <!-- upper position = staff 1 -->
+        <notations>
+          <articulations>
+            <staccato/>
+          </articulations>
+        </notations>
+      </note>
+
+   5. RESTS (build_note_or_rest):
+      EncodedSymbol: rhythm="rest_4"
+      ↓
+      <note>
+        <rest/>
+        <duration>6</duration>
+        <type>quarter</type>
+      </note>
+
+   6. CHORDS:
+      Multiple EncodedSymbols with "chord" marker between them
+      ↓
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>6</duration>
+      </note>
+      <note>
+        <chord/>  <!-- This indicates it's part of previous note -->
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>6</duration>
+      </note>
+
+   7. ARTICULATIONS (build_articulations):
+      Multiple articulations can appear on one note:
+      <notations>
+        <articulations>
+          <staccato/>
+          <accent/>
+        </articulations>
+        <ornaments>
+          <trill-mark/>
+        </ornaments>
+        <tied type="start"/>
+        <slur type="start"/>
+      </notations>
+
+   8. BARLINES:
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+      </barline>
+
+   9. REPEATS:
+      <barline location="right">
+        <repeat direction="backward"/>
+      </barline>
+
+D. Handle Multiple Voices:
+   - If notes have different durations simultaneously
+   - Use <voice> tags
+   - Use <backup> to rewind cursor for overlapping voices
+
+E. Tuplets:
+   - Add <time-modification>:
+     <actual-notes>3</actual-notes>
+     <normal-notes>2</normal-notes>
+   - Add tuplet bracket notation
+
+F. Duration Conversion:
+   - EncodedSymbol has duration as Fraction (relative to whole note)
+   - MusicXML needs integer "divisions"
+   - Formula: musicxml_duration = fraction × division
+   - Example: Quarter note in 4/4
+     • Fraction = 1/4
+     • Division = 24
+     • MusicXML duration = 1/4 × 24 = 6
+
+================================================================================
+COMPLETE EXAMPLE: ONE NOTE FROM IMAGE TO MUSICXML
+================================================================================
+
+Let's trace a dotted quarter note C# in treble clef:
+
+STEP 1: Image → Note Detection
+   - Segmentation model finds ellipse at pixel coords (450, 180)
+   - Detects stem pointing upward
+   - Creates: NoteheadWithStem(ellipse, stem, StemDirection.UP)
+
+STEP 2: Position Calculation
+   - StaffPoint at x=450 has staff lines at y=[150, 165, 180, 195, 210]
+   - Notehead center y=180 matches line at index 2
+   - Distance = 0 (on the line)
+   - Position = 2 × (5 - 2) + 0 - 1 = 5
+
+STEP 3: Transformer Inference
+   - Encoder processes staff image → context embeddings
+   - Decoder generates tokens:
+     • rhythm_token = "note_4." (dotted quarter)
+     • pitch_token = "C5" (treble clef line 3 = C5)
+     • lift_token = "#" (sharp)
+     • articulation_token = "_" (none)
+     • position_token = "upper"
+   - Creates: EncodedSymbol("note_4.", "C5", "#", "_", "upper")
+
+STEP 4: Duration Calculation
+   - Parse kern: "4." → base=4, dots=1
+   - Base duration = 1/4
+   - Add dot: 1/4 + 1/8 = 3/8
+   - SymbolDuration(Fraction(3, 8), dots=1, ...)
+
+STEP 5: MusicXML Generation
+   - Division determined: 24
+   - Duration in divisions: 3/8 × 24 = 9
+   - Generate XML:
+
+   <note>
+     <pitch>
+       <step>C</step>
+       <alter>1</alter>
+       <octave>5</octave>
+     </pitch>
+     <duration>9</duration>
+     <type>quarter</type>
+     <dot/>
+     <staff>1</staff>
+     <voice>1</voice>
+   </note>
+
+================================================================================
+KEY INSIGHTS ABOUT THE PIPELINE
+================================================================================
+
+1. TWO-STAGE RECOGNITION:
+   - Segmentation model: Finds noteheads/stems spatially
+   - Transformer model: Recognizes actual musical meaning from image
+
+2. POSITION vs PITCH:
+   - Position (integer): Where note sits on staff geometrically
+   - Pitch (string): What note actually sounds (requires clef context)
+
+3. CONTEXT IS CRITICAL:
+   - Same position = different pitches in different clefs
+   - Key signature affects all notes
+   - Accidentals persist within measure
+
+4. DURATION ENCODING:
+   - Uses Humdrum kern notation (power-of-2 denominators)
+   - Dots modify duration multiplicatively
+   - Tuplets use non-power-of-2 values (6, 12, etc.)
+
+5. TRANSFORMER'S ROLE:
+   - Not just OCR (Optical Character Recognition)
+   - Understands musical structure and context
+   - Can "read" symbols even if partially obscured
+   - Generates symbols in musical order (left to right)
+
+6. MUSICXML DIVISION:
+   - Acts as "least common denominator" for all durations
+   - Allows precise representation without floating point
+   - Calculated once for entire piece
+
+7. CLEANUP IS ESSENTIAL:
+   - Models can predict redundant/inconsistent symbols
+   - Post-processing ensures valid musical output
+   - Tuplet detection is heuristic-based (measure duration)
+
+================================================================================
+FILE REFERENCE GUIDE
+================================================================================
+
+Core Pipeline Files:
+- model.py              → Data structures (Note, Staff, StaffPoint, etc.)
+- note_detection.py     → Segmentation-based notehead detection
+- staff_parsing.py      → Staff preparation and orchestration
+- staff_parsing_tromr.py → TrOmr inference wrapper
+
+Transformer:
+- transformer/staff2score.py     → Main inference class
+- transformer/encoder_inference.py → Vision encoder (image → embeddings)
+- transformer/decoder_inference.py → Autoregressive decoder
+- transformer/vocabulary.py      → Symbol encoding/decoding
+- transformer/configs.py         → Model configuration
+
+MusicXML:
+- music_xml_generator.py → EncodedSymbol → MusicXML conversion
+- circle_of_fifths.py    → Key signature handling
+
+================================================================================
+END OF PIPELINE EXPLANATION
+================================================================================

@@ -299,8 +299,9 @@ class VisualizationOutput:
 
         img = self.original_image.copy()
 
-        # Color for the position lines (red)
+        # Color for the position lines (red for non-staff, pink for staff)
         line_color = (0, 0, 255)  # Red in BGR
+        pink_color = (203, 192, 255)  # Pink in BGR (for actual staff lines)
         line_thickness = 1
 
         # Color for accidental markers (green)
@@ -324,11 +325,11 @@ class VisualizationOutput:
                 avg_y = sum(y_values) / len(y_values)
                 staff_line_positions.append(avg_y)
 
-            # DRAW THE 5 ACTUAL STAFF LINES
+            # DRAW THE 5 ACTUAL STAFF LINES IN PINK
             for staff_line_y in staff_line_positions:
                 y = int(staff_line_y)
                 if 0 <= y < img.shape[0]:
-                    cv2.line(img, (0, y), (img_width - 1, y), line_color, line_thickness)
+                    cv2.line(img, (0, y), (img_width - 1, y), pink_color, line_thickness)
                     all_red_lines.append(y)
                     drawn_lines.add(y)
 

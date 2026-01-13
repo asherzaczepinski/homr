@@ -5,7 +5,7 @@ import re
 from fractions import Fraction
 from typing import Iterable
 
-from homr.simple_logging import eprint
+from homr.utils.simple_logging import eprint
 
 nonote = "."
 empty = "_"  # used for decorations on note, if there is no decoration
@@ -714,7 +714,7 @@ def sort_token_chords(
 if __name__ == "__main__":
     import json
 
-    from homr.simple_logging import eprint
+    from homr.utils.simple_logging import eprint
 
     vocab = Vocabulary()
 

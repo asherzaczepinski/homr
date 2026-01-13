@@ -3,12 +3,12 @@ from time import perf_counter
 
 import numpy as np
 
-from homr.simple_logging import eprint
+from homr.utils.simple_logging import eprint
 from homr.transformer.configs import Config
 from homr.transformer.decoder_inference import get_decoder
 from homr.transformer.encoder_inference import Encoder
 from homr.transformer.vocabulary import EncodedSymbol
-from homr.type_definitions import NDArray
+from homr.core.type_definitions import NDArray
 
 
 class Staff2Score:

@@ -4,7 +4,7 @@ import zipfile
 
 import requests
 
-from homr.simple_logging import eprint
+from homr.utils.simple_logging import eprint
 
 
 def download_file(url: str, filename: str) -> None:

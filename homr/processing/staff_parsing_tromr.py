@@ -1,8 +1,8 @@
-from homr.model import Staff
+from homr.core.model import Staff
 from homr.transformer.configs import Config
 from homr.transformer.staff2score import Staff2Score
 from homr.transformer.vocabulary import EncodedSymbol
-from homr.type_definitions import NDArray
+from homr.core.type_definitions import NDArray
 
 inference: Staff2Score | None = None
 

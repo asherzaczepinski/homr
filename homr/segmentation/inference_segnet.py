@@ -13,8 +13,8 @@ from homr.segmentation.config import (
     segnet_path_onnx,
     segnet_path_onnx_fp16,
 )
-from homr.simple_logging import eprint
-from homr.type_definitions import NDArray
+from homr.utils.simple_logging import eprint
+from homr.core.type_definitions import NDArray
 
 
 class Segnet:

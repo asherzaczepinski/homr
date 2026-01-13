@@ -4,13 +4,13 @@ import traceback
 import cv2
 import numpy as np
 
-from homr import constants
-from homr.bounding_boxes import BoundingBox, create_lines
-from homr.debug import Debug
-from homr.model import MultiStaff, Staff, StaffPoint
-from homr.simple_logging import eprint
-from homr.staff_detection import detect_staff
-from homr.type_definitions import NDArray
+from homr.core import constants
+from homr.core.bounding_boxes import BoundingBox, create_lines
+from homr.utils.debug import Debug
+from homr.core.model import MultiStaff, Staff, StaffPoint
+from homr.utils.simple_logging import eprint
+from homr.detection.staff_detection import detect_staff
+from homr.core.type_definitions import NDArray
 
 
 def save_staff_positions(

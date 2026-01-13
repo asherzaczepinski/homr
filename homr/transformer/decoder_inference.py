@@ -4,11 +4,11 @@ from typing import Any
 import numpy as np
 import onnxruntime as ort
 
-from homr.simple_logging import eprint
+from homr.utils.simple_logging import eprint
 from homr.transformer.configs import Config
 from homr.transformer.utils import softmax
 from homr.transformer.vocabulary import EncodedSymbol
-from homr.type_definitions import NDArray
+from homr.core.type_definitions import NDArray
 
 
 class ScoreDecoder:

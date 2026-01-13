@@ -5,8 +5,8 @@ from fractions import Fraction
 import musicxml.xmlelement.xmlelement as mxl
 import numpy as np
 
-from homr import constants
-from homr.simple_logging import eprint
+from homr.core import constants
+from homr.utils.simple_logging import eprint
 from homr.transformer.vocabulary import EncodedSymbol, empty, nonote, sort_token_chords
 
 

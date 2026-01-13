@@ -1,4 +1,4 @@
-from homr.model import MultiStaff, Staff
+from homr.core.model import MultiStaff, Staff
 
 
 def get_center_min_max_y(staff: Staff) -> tuple[float, float]:

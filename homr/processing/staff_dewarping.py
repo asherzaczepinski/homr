@@ -3,10 +3,10 @@ import numpy as np
 import PIL.Image
 from skimage import transform
 
-from homr.debug import Debug
-from homr.model import Staff
-from homr.simple_logging import eprint
-from homr.type_definitions import NDArray
+from homr.utils.debug import Debug
+from homr.core.model import Staff
+from homr.utils.simple_logging import eprint
+from homr.core.type_definitions import NDArray
 
 
 class StaffDewarping:

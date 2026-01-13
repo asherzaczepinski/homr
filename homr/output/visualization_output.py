@@ -9,8 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from homr.bounding_boxes import DebugDrawable
-from homr.type_definitions import NDArray
+from homr.core.bounding_boxes import DebugDrawable
+from homr.core.type_definitions import NDArray
 
 
 class VisualizationOutput:

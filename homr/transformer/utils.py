@@ -1,6 +1,6 @@
 import numpy as np
 
-from homr.type_definitions import NDArray
+from homr.core.type_definitions import NDArray
 
 
 def softmax(z: NDArray, dim: int = -1) -> NDArray:

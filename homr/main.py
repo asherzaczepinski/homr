@@ -10,48 +10,54 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from homr import color_adjust, download_utils
-from homr.autocrop import autocrop
-from homr.bar_line_detection import (
-    detect_bar_lines,
-    prepare_bar_line_image,
-)
-from homr.deskew import deskew_image
-from homr.bounding_boxes import (
+from homr.preprocessing import color_adjust
+from homr.preprocessing.autocrop import autocrop
+from homr.preprocessing.deskew import deskew_image
+from homr.preprocessing.resize import resize_image
+from homr.preprocessing.noise_filtering import filter_predictions
+
+from homr.core.bounding_boxes import (
     BoundingEllipse,
     RotatedBoundingBox,
     create_bounding_ellipses,
     create_rotated_bounding_boxes,
 )
-from homr.brace_dot_detection import (
+from homr.core.model import InputPredictions, MultiStaff
+from homr.core.type_definitions import NDArray
+
+from homr.detection.bar_line_detection import (
+    detect_bar_lines,
+    prepare_bar_line_image,
+)
+from homr.detection.brace_dot_detection import (
     find_braces_brackets_and_grand_staff_lines,
     prepare_brace_dot_image,
 )
-from homr.debug import Debug
-from homr.model import InputPredictions, MultiStaff
-from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
-from homr.noise_filtering import filter_predictions
-from homr.note_detection import add_notes_to_staffs, combine_noteheads_with_stems
-from homr.resize import resize_image
+from homr.detection.note_detection import add_notes_to_staffs, combine_noteheads_with_stems
+from homr.detection.staff_detection import break_wide_fragments, detect_staff, make_lines_stronger
+from homr.detection.title_detection import detect_title, download_ocr_weights
+
+from homr.processing.staff_parsing import parse_staffs
+from homr.processing.staff_position_save_load import load_staff_positions, save_staff_positions
+
+from homr.output.music_xml_generator import XmlGeneratorArguments, generate_xml
+from homr.output.visualization_output import VisualizationOutput
+
+from homr.utils.debug import Debug
+from homr.utils.simple_logging import eprint
+from homr.utils import download_utils
+
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
 from homr.segmentation.inference_segnet import extract
-from homr.simple_logging import eprint
-from homr.staff_detection import break_wide_fragments, detect_staff, make_lines_stronger
-from homr.staff_parsing import parse_staffs
-from homr.staff_position_save_load import load_staff_positions, save_staff_positions
-from homr.title_detection import detect_title, download_ocr_weights
 from homr.transformer.configs import Config, default_config
-from homr.type_definitions import NDArray
-from homr.visualization_output import VisualizationOutput
 
-# Import Orchestra-AI-2 for accidental detection
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'Orchestra-AI-2'))
+# Import accidental detector from internal module
 try:
-    from test_accidentals import AccidentalDetector
+    from homr.detection.accidentals import AccidentalDetector
     ACCIDENTAL_DETECTOR_AVAILABLE = True
 except ImportError as e:
     ACCIDENTAL_DETECTOR_AVAILABLE = False
-    eprint("⚠ WARNING: Orchestra-AI-2 accidental detector not available")
+    eprint("⚠ WARNING: Accidental detector not available")
     eprint(f"⚠ Import error: {e}")
     eprint("⚠ Will use geometric fallback method for accidental detection")
 
@@ -186,16 +192,16 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
         predictions.staff, skip_merging=True, min_size=(5, 1), max_size=(10000, 100)
     )
 
-    # Use Orchestra-AI-2 for accidental detection
+    # Use AccidentalDetector for accidental detection
     accidental_detections = []
     clefs_keys = []  # Will store bounding boxes for compatibility
-    use_orchestra_ai = ACCIDENTAL_DETECTOR_AVAILABLE
+    use_accidental_detector = ACCIDENTAL_DETECTOR_AVAILABLE
 
-    if use_orchestra_ai:
-        eprint("Using Orchestra-AI-2 for accidental detection")
+    if use_accidental_detector:
+        eprint("Using AccidentalDetector for accidental detection")
         try:
-            # Initialize Orchestra-AI-2 accidental detector
-            model_path = os.path.join(os.path.dirname(__file__), '..', 'Orchestra-AI-2', 'weights', 'best.pt')
+            # Initialize accidental detector with internal model
+            model_path = os.path.join(os.path.dirname(__file__), 'models', 'accidentals', 'best.pt')
             detector = AccidentalDetector(model_path=model_path, confidence_threshold=0.3)
 
             # Convert preprocessed image to RGB for detection
@@ -203,7 +209,7 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
 
             # Run detection
             detections = detector.detect_in_image(img_rgb)
-            eprint(f"Found {len(detections)} accidentals using Orchestra-AI-2")
+            eprint(f"Found {len(detections)} accidentals using AccidentalDetector")
 
             # Remove overlapping detections (>50% overlap), keeping higher confidence
             filtered_detections = []
@@ -239,7 +245,7 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
             detections = filtered_detections
             eprint(f"Final count: {len(detections)} accidentals after overlap removal")
 
-            # Convert Orchestra-AI-2 detections to our format
+            # Convert detections to our format
             for det in detections:
                 # Create a simple bounding box from the detection
                 center = ((det.x1 + det.x2) / 2, (det.y1 + det.y2) / 2)
@@ -273,12 +279,12 @@ def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSym
                 eprint(f"  {class_name}: {count}")
 
         except Exception as e:
-            eprint(f"⚠ ERROR using Orchestra-AI-2 detector: {e}")
+            eprint(f"⚠ ERROR using accidental detector: {e}")
             eprint("⚠ FALLING BACK to geometric method")
-            use_orchestra_ai = False
+            use_accidental_detector = False
 
-    # Fallback to original method if Orchestra-AI-2 is not available
-    if not use_orchestra_ai or len(accidental_detections) == 0:
+    # Fallback to original method if accidental detector is not available
+    if not use_accidental_detector or len(accidental_detections) == 0:
         eprint("⚠ FALLBACK: Creating bounds for accidentals (sharps, flats, naturals) - using geometric method")
         # Detect all symbols first
         all_symbols = create_rotated_bounding_boxes(
